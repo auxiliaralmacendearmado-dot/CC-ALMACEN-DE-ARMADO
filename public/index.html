@@ -5652,10 +5652,19 @@
     let visibles = 0;
     document.querySelectorAll('#tbody-remitos .remito-row').forEach(row => {
       const ok = row.textContent.toUpperCase().includes(q);
-      row.style.display = ok ? '' : 'none';
+      row.classList.toggle('hidden', !ok);
       if(ok) visibles++;
     });
     document.getElementById('remitos-sin-resultados').classList.toggle('hidden', visibles > 0);
+  }
+
+  function safeTimeoutSignal(ms){
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      try { return AbortSignal.timeout(ms); } catch(e){}
+    }
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), ms);
+    return controller.signal;
   }
 
   /* Estado inicial del módulo */
@@ -5701,8 +5710,8 @@
         actualizarIndicadorServidor(true);
         // Cargar datos del servidor
         await cargarDatosDesdeServidor();
-        document.getElementById('login-screen').style.display = 'none';
-        document.querySelector('.app').style.display = 'flex';
+        document.getElementById('login-screen').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
         irA('dashboard');
         return;
       } else {
@@ -5722,8 +5731,8 @@
     try { aplicarPermisosUsuario(usuario); } catch(e){}
     try { aplicarRestriccionesReportes(cred.role === 'admin'); } catch(e){}
     actualizarIndicadorServidor(false);
-    document.getElementById('login-screen').style.display = 'none';
-    document.querySelector('.app').style.display = 'flex';
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
     irA('dashboard');
     setTimeout(iniciarApp, 50);
   }
@@ -5749,18 +5758,72 @@
     } catch(e){ console.warn('Error cargando datos del servidor:', e); }
   }
 
-  function actualizarIndicadorServidor(conectado){
+  let sseSource = null;
+
+  function actualizarIndicadorServidor(conectado, textoCustom){
     const el = document.getElementById('server-indicator');
     if(!el) return;
     if(conectado){
-      el.textContent = '🟢 Nube';
+      el.textContent = textoCustom || '🟢 Nube en Vivo';
       el.style.background = '#e8f5e9';
       el.style.color = '#2e7d32';
+      el.style.borderColor = '#a5d6a7';
     } else {
-      el.textContent = '⚫ Local';
+      el.textContent = textoCustom || '⚫ Local (Offline)';
       el.style.background = '#f0f2f5';
       el.style.color = '#9099AC';
+      el.style.borderColor = '#dde1e8';
     }
+  }
+
+  function iniciarSincronizacionNubeTiempoReal(){
+    if(!API_URL || !MODO_SERVIDOR) return;
+    if(sseSource){ sseSource.close(); sseSource = null; }
+    try {
+      sseSource = new EventSource(API_URL + '/api/sync/stream');
+      sseSource.addEventListener('connected', (e) => {
+        actualizarIndicadorServidor(true, '🟢 Nube en Vivo');
+      });
+      const handleUpdate = async (e) => {
+        try {
+          const data = JSON.parse(e.data || '{}');
+          if(data.usuario !== usuarioActual){
+            mostrarToast('⚡ Sincronizado en vivo desde la nube por ' + (data.usuario || 'otro usuario'));
+            await cargarDatosDesdeServidor();
+          }
+        } catch(err){ console.warn('Error parseando evento Nube:', err); }
+      };
+      sseSource.addEventListener('cliente_actualizado', handleUpdate);
+      sseSource.addEventListener('cliente_eliminado', handleUpdate);
+      sseSource.addEventListener('movimiento_creado', handleUpdate);
+      sseSource.addEventListener('remito_creado', handleUpdate);
+      sseSource.addEventListener('configuracion_actualizada', handleUpdate);
+      sseSource.addEventListener('clientes_importados', handleUpdate);
+      sseSource.onerror = () => {
+        actualizarIndicadorServidor(false, '🟡 Reconectando Nube...');
+      };
+    } catch(err){ console.warn('Error al iniciar SSE Nube:', err); }
+  }
+
+  async function cargarDatosDesdeServidor(){
+    try {
+      const [clientesData, config] = await Promise.all([
+        apiCall('GET', '/api/clientes'),
+        apiCall('GET', '/api/configuracion')
+      ]);
+      if(clientesData && Array.isArray(clientesData)){
+        _clientesEnMemoria = clientesData;
+        _clientesFiltrados = clientesData;
+        _paginaActual = 0;
+        renderPaginaClientes();
+        setTimeout(poblarSelectsConClientesReales, 100);
+      }
+      if(config){
+        if(config.empresa){ const el=document.querySelector('.brand .name'); if(el) el.textContent=config.empresa; }
+        if(config.colorAcento) document.documentElement.style.setProperty('--accent', config.colorAcento);
+        if(config.calibracion) Object.assign(CALIBRACION, config.calibracion);
+      }
+    } catch(e){ console.warn('Error cargando datos del servidor:', e); }
   }
 
   async function detectarServidor(){
@@ -5768,6 +5831,7 @@
     try {
       const r = await fetch(API_URL + '/api/health', { signal: AbortSignal.timeout(3000) });
       MODO_SERVIDOR = r.ok;
+      if(r.ok) iniciarSincronizacionNubeTiempoReal();
       return r.ok;
     } catch { MODO_SERVIDOR = false; return false; }
   }
@@ -5800,6 +5864,7 @@
         API_TOKEN = data.token;
         localStorage.setItem('almacen-api-token', API_TOKEN);
         MODO_SERVIDOR = true;
+        iniciarSincronizacionNubeTiempoReal();
       }
       return data;
     } catch { return null; }
@@ -5822,14 +5887,24 @@
 
   // Función para configurar el servidor desde la UI
   function configurarServidor(){
-    const url = prompt('URL del servidor (ej: https://tu-app.railway.app)\nDejá vacío para modo offline:');
+    const actual = API_URL || 'https://tu-app.onrender.com (o Supabase)';
+    const url = prompt('☁️ CONFIGURACIÓN DE LA NUBE\n\nIngresá la URL de tu Servidor Nube / Supabase:\nEjemplo: https://almacen-armado.onrender.com\n\n(Dejá vacío si querés usar solo LocalStorage):', API_URL);
     if(url === null) return;
     API_URL = url.trim().replace(/\/$/, '');
     localStorage.setItem('almacen-api-url', API_URL);
     if(API_URL){
-      detectarServidor().then(ok => mostrarToast(ok ? '✓ Servidor conectado: ' + API_URL : '⚠️ No se pudo conectar al servidor'));
+      detectarServidor().then(ok => {
+        if(ok){
+          actualizarIndicadorServidor(true, '🟢 Nube en Vivo');
+          mostrarToast('✓ Nube conectada y sincronizada: ' + API_URL);
+        } else {
+          actualizarIndicadorServidor(false, '⚠️ Error Nube');
+          mostrarToast('⚠️ No se pudo conectar al servidor Nube');
+        }
+      });
     } else {
       MODO_SERVIDOR = false;
+      actualizarIndicadorServidor(false, '⚫ Local (Offline)');
       mostrarToast('Modo offline — datos guardados localmente');
     }
   }
@@ -6270,6 +6345,3 @@
 
 </body>
 </html>
-git add public/index.html
-git commit -m "Corregir visibilidad de login y compatibilidad CSS"
-git push origin main
