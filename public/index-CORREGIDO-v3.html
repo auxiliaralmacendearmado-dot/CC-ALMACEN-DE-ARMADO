@@ -1940,7 +1940,6 @@
 
     irA('ficha');
     renderResumen360();
-    if(MODO_SERVIDOR) cargarMovimientosDesdeServidor(codigo);
   }
 
   function toggleAudit(){
@@ -2177,7 +2176,7 @@
   }
 
   function renderUserCard(u){
-    const defaults = Object.assign({}, ROLE_DEFAULTS[u.rol], u.permisos || {});
+    const defaults = ROLE_DEFAULTS[u.rol];
     const safe = idSafe(u.usuario);
     const checks = PERMISOS.map(([key,label]) => {
       const checked = defaults[key] ? 'checked' : '';
@@ -2237,13 +2236,6 @@
   }
 
   function guardarPermisos(usuario){
-    const permisos = {};
-    PERMISOS.forEach(function(p){
-      const key = p[0];
-      const checkbox = document.getElementById(idPermiso(usuario, key));
-      permisos[key] = checkbox ? checkbox.checked : false;
-    });
-    if(MODO_SERVIDOR) apiCall('PUT', '/api/usuarios/' + encodeURIComponent(usuario) + '/permisos', { permisos: permisos }).catch(function(){});
     if(usuario === usuarioActual) aplicarPermisosUsuario(usuario);
     mostrarToast('Permisos de ' + usuario + ' guardados');
   }
@@ -2259,14 +2251,11 @@
 
     USUARIOS.push({ usuario:usuario, rol:rol });
     CREDENCIALES[usuario] = { pass:clave, role:rol, label:usuario, av:generarIniciales(usuario) };
-    if(MODO_SERVIDOR){
-      apiCall('POST', '/api/usuarios', { usuario:usuario, password:clave, rol:rol, label:usuario, avatar:generarIniciales(usuario) }).catch(function(){});
-    }
 
     renderUsuarios();
     document.getElementById('nuevo-usuario-nombre').value = '';
     document.getElementById('nuevo-usuario-clave').value = '';
-    mostrarToast('Usuario ' + usuario + ' creado' + (MODO_SERVIDOR ? ' — ya puede iniciar sesión desde cualquier pantalla' : ' — ya puede iniciar sesión (guardado solo en este navegador)'));
+    mostrarToast('Usuario ' + usuario + ' creado — ya puede iniciar sesión');
   }
 
   function toggleResetPass(usuario){
@@ -2284,7 +2273,6 @@
     } else {
       CREDENCIALES[usuario].pass = nueva;
     }
-    if(MODO_SERVIDOR) apiCall('PUT', '/api/usuarios/' + encodeURIComponent(usuario) + '/password', { password: nueva }).catch(function(){});
     document.getElementById('nueva-pass-' + safe).value = '';
     toggleResetPass(usuario);
     mostrarToast('Contraseña de ' + usuario + ' actualizada');
@@ -2303,7 +2291,6 @@
     delete CREDENCIALES[usuario];
     renderUsuarios();
     registrarAuditoria('Eliminó usuario', 'b-red', usuario, usuario, 'Movido a la papelera', null, null);
-    if(MODO_SERVIDOR) apiCall('DELETE', '/api/usuarios/' + encodeURIComponent(usuario)).catch(function(){});
     mostrarToast('Usuario ' + usuario + ' movido a la papelera de recuperación');
   }
 
@@ -2313,7 +2300,6 @@
     const u = USUARIOS.find(x => x.usuario === usuario);
     u.rol = nuevoRol;
     if(CREDENCIALES[usuario]) CREDENCIALES[usuario].role = nuevoRol;
-    if(MODO_SERVIDOR) apiCall('PUT', '/api/usuarios/' + encodeURIComponent(usuario) + '/rol', { rol: nuevoRol }).catch(function(){});
     renderUsuarios();
     if(usuario === usuarioActual) aplicarPermisosUsuario(usuario);
     mostrarToast('Rol de ' + usuario + ' actualizado a ' + ROLE_LABELS[nuevoRol] + ' (los permisos volvieron a los valores por defecto del rol)');
@@ -2396,7 +2382,6 @@
     renderPaginaClientes();
     registrarAuditoria('Eliminó cliente', 'b-red', nombre + ' (' + codigo + ')', '—', 'Enviado a papelera', 'Ver papelera', 'configuracion');
     guardarEstado();
-    if(MODO_SERVIDOR) apiCall('DELETE', '/api/clientes/' + encodeURIComponent(codigo)).catch(function(){});
     mostrarToast(nombre + ' enviado a la Papelera de Recuperación');
   }
 
@@ -2672,7 +2657,6 @@
 
     registrarAuditoria('Creó cliente', 'b-green', razonSocial + ' (' + codigo + ')', '—', condicionIva || '—', 'Ver cliente', 'clientes');
     guardarEstado();
-    if(MODO_SERVIDOR) guardarClienteEnServidor(nuevoCliente).catch(function(){});
     poblarSelectsConClientesReales();
     mostrarToast('Cliente ' + razonSocial + ' creado correctamente');
 
@@ -2779,7 +2763,6 @@
 
     registrarAuditoria('Editó cliente', 'b-blue', razonSocial + ' (' + codigo + ')', '—', condicionIva || '—', 'Ver cliente', 'ficha');
     guardarEstado();
-    if(MODO_SERVIDOR && idx >= 0) guardarClienteEnServidor(_clientesEnMemoria[idx]).catch(function(){});
     mostrarToast('Datos de ' + razonSocial + ' guardados correctamente');
   }
 
@@ -3203,7 +3186,6 @@
       if(mov) mov.estado = 'anulado';
       actualizarFilaClienteEnDOM(codigoClienteActual, saldoActual);
       guardarEstado();
-      if(MODO_SERVIDOR && mov) apiCall('PUT', '/api/movimientos/' + encodeURIComponent(mov.id) + '/anular', { motivo: motivo }).catch(function(){});
     }
     mostrarToast(comprobante + ' anulado — saldo actualizado');
   }
@@ -3503,12 +3485,11 @@
     // Guardar en el store del cliente
     if(codigoClienteActual){
       const datos = datosCliente(codigoClienteActual);
-      var _movNuevo = {
+      datos.movimientos.push({
         id: filaId, tipo, badge:'<span class="badge ' + badgeClr + '">' + config.etiqueta + '</span>',
         comprobante, fecha, fechaTexto, debe, haber, saldoAcum: saldoActual,
         usuario: usuarioActual.toLowerCase(), estado:'activo', obs, relacionado, forma
-      };
-      datos.movimientos.push(_movNuevo);
+      });
       // Si es pago, anticipo u otro tipo haber con forma de cobro → lista de pagos
       if(['pago','anticipo'].includes(tipo)){
         datos.pagos.push({ comprobante, fecha: new Date(fecha+'T00:00:00').toLocaleDateString('es-AR'), forma, importe, obs });
@@ -3538,7 +3519,6 @@
       // Actualizar saldo en la fila de la tabla de clientes (busca por código, no por referencia stale)
       actualizarFilaClienteEnDOM(codigoClienteActual, saldoActual);
       guardarEstado();
-      if(MODO_SERVIDOR) guardarMovimientoEnServidor(_movNuevo, codigoClienteActual).catch(function(){});
     }
 
     registrarAuditoria('Registró movimiento', badgeClr, config.etiqueta + ': ' + comprobante + ' — $ ' + importe.toLocaleString('es-AR'), '$ ' + saldoAnterior.toLocaleString('es-AR'), '$ ' + saldoActual.toLocaleString('es-AR'), 'Ver cliente', 'ficha');
@@ -5641,7 +5621,6 @@
 
     registrarAuditoria('Generó remito', 'b-green', numero + ' — ' + nombre, '—', numero, 'Ver cliente', 'clientes');
     guardarEstado();
-    if(MODO_SERVIDOR) guardarRemitoEnServidor(numero, valores, plantilla ? JSON.parse(JSON.stringify(plantilla)) : null).catch(function(){});
     mostrarToast('Remito ' + numero + ' guardado');
     toggleFormRemito();
   }
@@ -5745,11 +5724,9 @@
 
   async function cargarDatosDesdeServidor(){
     try {
-      const [clientesData, config, usuariosData, remitosData] = await Promise.all([
+      const [clientesData, config] = await Promise.all([
         apiCall('GET', '/api/clientes'),
-        apiCall('GET', '/api/configuracion'),
-        apiCall('GET', '/api/usuarios'),
-        apiCall('GET', '/api/remitos')
+        apiCall('GET', '/api/configuracion')
       ]);
       if(clientesData && Array.isArray(clientesData)){
         _clientesEnMemoria = clientesData;
@@ -5763,57 +5740,7 @@
         if(config.colorAcento) document.documentElement.style.setProperty('--accent', config.colorAcento);
         if(config.calibracion) Object.assign(CALIBRACION, config.calibracion);
       }
-      if(usuariosData && Array.isArray(usuariosData) && usuariosData.length){
-        USUARIOS = usuariosData;
-        try { renderUsuarios(); } catch(e){}
-      }
-      if(remitosData && Array.isArray(remitosData)){
-        remitosData.forEach(function(r){
-          REMITOS_GUARDADOS[r.numero] = { valores: r.valores, plantillaSnapshot: r.plantillaSnapshot };
-        });
-        try { renderRemitosDesdeServidor(remitosData); } catch(e){}
-      }
     } catch(e){ console.warn('Error cargando datos del servidor:', e); }
-  }
-
-  function renderRemitosDesdeServidor(remitosData){
-    const tbody = document.getElementById('tbody-remitos');
-    if(!tbody) return;
-    tbody.innerHTML = '';
-    remitosData.forEach(function(r){
-      const v = r.valores || {};
-      const plantillaNombre = (r.plantillaSnapshot && r.plantillaSnapshot.nombre) || '—';
-      const fila = document.createElement('tr');
-      fila.className = 'remito-row';
-      fila.dataset.numero = r.numero;
-      fila.innerHTML =
-        '<td>' + r.numero + '</td><td>' + (v.fecha ? new Date(v.fecha + 'T00:00:00').toLocaleDateString('es-AR') : '—') + '</td>' +
-        '<td class="uc">' + (v.cliente || v.razonSocial || '—') + '</td><td>' + (v.transportista || '—') + '</td>' +
-        '<td>' + (v.bultos || '—') + '</td><td>' + plantillaNombre + '</td>' +
-        '<td>' +
-          '<span class="editado-tag" onclick="vistaPreviaRemitoGuardado(\'' + r.numero + '\')">Vista previa</span> · ' +
-          '<span class="editado-tag" onclick="imprimirRemitoGuardado(\'' + r.numero + '\')">Imprimir</span>' +
-        '</td>';
-      tbody.appendChild(fila);
-    });
-  }
-
-  async function cargarMovimientosDesdeServidor(codigo){
-    if(!MODO_SERVIDOR) return;
-    const rows = await apiCall('GET', '/api/movimientos/' + encodeURIComponent(codigo));
-    if(!Array.isArray(rows)) return;
-    const datos = datosCliente(codigo);
-    datos.movimientos = rows;
-    datos.facturas = rows.filter(function(m){ return m.tipo === 'factura' && m.estado !== 'anulado'; }).map(function(m){ return { id:'fac-'+m.comprobante, numero:m.comprobante, fecha:m.fechaTexto, importe:m.debe, ncAplicadas:0, pagosAplicados:0 }; });
-    datos.pagos = rows.filter(function(m){ return (m.tipo === 'pago' || m.tipo === 'anticipo') && m.estado !== 'anulado'; }).map(function(m){ return { comprobante:m.comprobante, fecha:m.fechaTexto, forma:'', importe:m.haber, obs:m.obs }; });
-    datos.notas = rows.filter(function(m){ return (m.tipo === 'nota_credito' || m.tipo === 'nota_debito') && m.estado !== 'anulado'; }).map(function(m){ return { numero:m.comprobante, tipo: m.tipo==='nota_credito'?'credito':'debito', fecha:m.fechaTexto, importe: m.tipo==='nota_credito'?m.haber:m.debe, motivo:m.obs||'' }; });
-    if(codigoClienteActual === codigo){
-      try { renderMovimientos(codigo); } catch(e){}
-      try { renderFacturasCliente(codigo); } catch(e){}
-      try { renderPagosCliente(codigo); } catch(e){}
-      try { renderNotasCliente(codigo); } catch(e){}
-      try { renderResumen360(); } catch(e){}
-    }
   }
 
   function actualizarIndicadorServidor(conectado){
