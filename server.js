@@ -1,24 +1,24 @@
-require('dotenv').config();
+'dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
- 
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'almacen-armado-secret-2026';
- 
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
- 
+
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
- 
+
 async function initDB() {
   const client = await pool.connect();
   try {
@@ -31,6 +31,7 @@ async function initDB() {
         label VARCHAR(100),
         avatar VARCHAR(10),
         activo BOOLEAN DEFAULT true,
+        permisos JSONB DEFAULT '{}'::jsonb,
         creado_en TIMESTAMP DEFAULT NOW()
       );
       CREATE TABLE IF NOT EXISTS clientes (
@@ -105,6 +106,7 @@ async function initDB() {
         usuario VARCHAR(100),
         fecha TIMESTAMP DEFAULT NOW()
       );
+      ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS permisos JSONB DEFAULT '{}'::jsonb;
     `);
     const hash1 = await bcrypt.hash('admin', 10);
     const hash2 = await bcrypt.hash('1234', 10);
@@ -113,19 +115,19 @@ async function initDB() {
     console.log('✓ Base de datos lista');
   } finally { client.release(); }
 }
- 
+
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Sin token' });
   try { req.user = jwt.verify(token, JWT_SECRET); next(); }
   catch { res.status(401).json({ error: 'Token inválido' }); }
 }
- 
+
 app.get('/api/health', async (req, res) => {
   try { await pool.query('SELECT 1'); res.json({ ok: true }); }
   catch(e) { res.status(500).json({ ok: false, error: e.message }); }
 });
- 
+
 app.post('/api/login', async (req, res) => {
   const { usuario, password } = req.body;
   try {
@@ -137,14 +139,14 @@ app.post('/api/login', async (req, res) => {
     res.json({ token, user: { username: rows[0].username, role: rows[0].role, label: rows[0].label, avatar: rows[0].avatar } });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.get('/api/clientes', auth, async (req, res) => {
   try {
     const { rows } = await pool.query("SELECT * FROM clientes WHERE estado != 'eliminado' ORDER BY nombre ASC");
     res.json(rows.map(r => ({ codigo: r.codigo, nombre: r.nombre, cuit: r.cuit||'', vendedor: r.vendedor||'', estado: r.estado, saldo: String(r.saldo||0), fechaAlta: r.fecha_alta, condicionIva: r.condicion_iva||'', email: r.email||'', telefono: r.telefono||'', whatsapp: r.whatsapp||'', direccion: r.direccion||'', localidad: r.localidad||'', provincia: r.provincia||'', cp: r.cp||'', observaciones: r.observaciones||'', limite: String(r.limite||0) })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.post('/api/clientes', auth, async (req, res) => {
   const c = req.body;
   try {
@@ -153,7 +155,7 @@ app.post('/api/clientes', auth, async (req, res) => {
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.put('/api/clientes/:codigo', auth, async (req, res) => {
   const c = req.body;
   try {
@@ -162,38 +164,50 @@ app.put('/api/clientes/:codigo', auth, async (req, res) => {
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.delete('/api/clientes/:codigo', auth, async (req, res) => {
   try {
     await pool.query("UPDATE clientes SET estado='eliminado' WHERE codigo=$1", [req.params.codigo]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.get('/api/movimientos/:codigo', auth, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM movimientos WHERE codigo_cliente=$1 ORDER BY fecha DESC', [req.params.codigo]);
     res.json(rows.map(r => ({ id: r.id, tipo: r.tipo, badge: r.badge, fecha: r.fecha, fechaTexto: r.fecha_texto, comprobante: r.comprobante, obs: r.obs, debe: Number(r.debe), haber: Number(r.haber), saldoAcum: Number(r.saldo_acum), estado: r.estado, usuario: r.usuario })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.post('/api/movimientos', auth, async (req, res) => {
   const m = req.body;
   try {
-    await pool.query('INSERT INTO movimientos (id,codigo_cliente,tipo,badge,fecha,fecha_texto,comprobante,obs,debe,haber,saldo_acum,estado,usuario) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+    await pool.query('INSERT INTO movimientos (id,codigo_cliente,tipo,badge,fecha,fecha_texto,comprobante,obs,debe,haber,saldo_acum,estado,usuario) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (id) DO UPDATE SET tipo=EXCLUDED.tipo,badge=EXCLUDED.badge,fecha=EXCLUDED.fecha,fecha_texto=EXCLUDED.fecha_texto,comprobante=EXCLUDED.comprobante,obs=EXCLUDED.obs,debe=EXCLUDED.debe,haber=EXCLUDED.haber,saldo_acum=EXCLUDED.saldo_acum,estado=EXCLUDED.estado',
     [m.id,m.codigoCliente,m.tipo,m.badge||'',m.fecha,m.fechaTexto||'',m.comprobante||'',m.obs||'',Number(m.debe)||0,Number(m.haber)||0,Number(m.saldoAcum)||0,m.estado||'activo',req.user.username]);
     await pool.query('UPDATE clientes SET saldo=saldo+$1-$2,actualizado_en=NOW() WHERE codigo=$3',[Number(m.debe)||0,Number(m.haber)||0,m.codigoCliente]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
+app.put('/api/movimientos/:id/anular', auth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM movimientos WHERE id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Movimiento no encontrado' });
+    const mov = rows[0];
+    if (mov.estado === 'anulado') return res.json({ ok: true });
+    await pool.query("UPDATE movimientos SET estado='anulado' WHERE id=$1", [req.params.id]);
+    await pool.query('UPDATE clientes SET saldo=saldo-$1+$2,actualizado_en=NOW() WHERE codigo=$3',[Number(mov.debe)||0,Number(mov.haber)||0,mov.codigo_cliente]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/remitos', auth, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM remitos ORDER BY creado_en DESC');
     res.json(rows.map(r => ({ numero: r.numero, valores: r.valores, plantillaSnapshot: r.plantilla_snapshot, creadoEn: r.creado_en })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.post('/api/remitos', auth, async (req, res) => {
   const { numero, valores, plantillaSnapshot } = req.body;
   try {
@@ -202,7 +216,7 @@ app.post('/api/remitos', auth, async (req, res) => {
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.get('/api/configuracion', auth, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT clave,valor FROM configuracion');
@@ -211,7 +225,7 @@ app.get('/api/configuracion', auth, async (req, res) => {
     res.json(cfg);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.post('/api/configuracion', auth, async (req, res) => {
   try {
     for (const [key, val] of Object.entries(req.body)) {
@@ -220,7 +234,7 @@ app.post('/api/configuracion', auth, async (req, res) => {
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.post('/api/importar-clientes', auth, async (req, res) => {
   const { clientes } = req.body;
   if (!Array.isArray(clientes)) return res.status(400).json({ error: 'Formato inválido' });
@@ -234,28 +248,71 @@ app.post('/api/importar-clientes', auth, async (req, res) => {
   }
   res.json({ ok: true, creados, errores });
 });
- 
+
 app.get('/api/usuarios', auth, async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT id,username,role,label,avatar,activo FROM usuarios');
-    res.json(rows);
+    const { rows } = await pool.query('SELECT id,username,role,label,avatar,activo,permisos FROM usuarios WHERE activo=true');
+    res.json(rows.map(r => ({ usuario: r.username, rol: r.role, label: r.label, avatar: r.avatar, permisos: r.permisos || {} })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
+app.post('/api/usuarios', auth, async (req, res) => {
+  const { usuario, password, rol, label, avatar } = req.body;
+  if (!usuario || !password) return res.status(400).json({ error: 'Falta usuario o contraseña' });
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const iniciales = (avatar || usuario.slice(0,2)).toUpperCase();
+    await pool.query(
+      `INSERT INTO usuarios (username,password_hash,role,label,avatar,activo) VALUES ($1,$2,$3,$4,$5,true)
+       ON CONFLICT (username) DO UPDATE SET password_hash=$2,role=$3,label=$4,avatar=$5,activo=true`,
+      [usuario.toUpperCase(), hash, rol || 'cajero', label || usuario, iniciales]
+    );
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/usuarios/:usuario/rol', auth, async (req, res) => {
+  try {
+    await pool.query('UPDATE usuarios SET role=$1 WHERE username=$2', [req.body.rol, req.params.usuario.toUpperCase()]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/usuarios/:usuario/permisos', auth, async (req, res) => {
+  try {
+    await pool.query('UPDATE usuarios SET permisos=$1 WHERE username=$2', [JSON.stringify(req.body.permisos || {}), req.params.usuario.toUpperCase()]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/usuarios/:usuario/password', auth, async (req, res) => {
+  try {
+    const hash = await bcrypt.hash(req.body.password, 10);
+    await pool.query('UPDATE usuarios SET password_hash=$1 WHERE username=$2', [hash, req.params.usuario.toUpperCase()]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/usuarios/:usuario', auth, async (req, res) => {
+  try {
+    await pool.query('UPDATE usuarios SET activo=false WHERE username=$1', [req.params.usuario.toUpperCase()]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/auditoria', auth, async (req, res) => {
   try {
     await pool.query('INSERT INTO auditoria (tipo,badge,descripcion,usuario) VALUES ($1,$2,$3,$4)', [req.body.tipo,req.body.badge||'',req.body.descripcion||'',req.user.username]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
- 
+
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   }
 });
- 
+
 initDB().then(() => {
   app.listen(PORT, () => console.log(`✓ Servidor en puerto ${PORT}`));
 }).catch(e => { console.error('Error BD:', e); process.exit(1); });
- 
